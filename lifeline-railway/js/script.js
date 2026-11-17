@@ -1,161 +1,257 @@
-function renderRoleDashboard() {
-    const u = state.user;
-    if (!u) return;
-
-    const r = u.role; // 'user', 'member', 'officer', 'admin'
-    const studentView = document.getElementById("studentDashboardView");
-    const medicView = document.getElementById("medicDashboardView");
-    const officerView = document.getElementById("officerDashboardView");
-
-    const badgeHeader = document.getElementById("roleBadgeHeader");
-    const roleHeaderBadge = document.getElementById("roleHeaderBadge");
-    const roleHeaderTitle = document.getElementById("roleHeaderTitle");
-    const roleHeaderAction = document.getElementById("roleHeaderAction");
-    const navDashText = document.getElementById("navDashText");
-
-    if (badgeHeader) {
-        if (r === "officer" || r === "admin") {
-            badgeHeader.textContent = "OFFICER";
-            badgeHeader.style.background = "#2563eb";
-        } else if (r === "member") {
-            badgeHeader.textContent = "MEDIC";
-            badgeHeader.style.background = "#059669";
-        } else {
-            badgeHeader.textContent = "STUDENT";
-            badgeHeader.style.background = "#4f46e5";
-        }
-    }
-
-    if (roleHeaderBadge) roleHeaderBadge.textContent = r.toUpperCase();
-    if (roleHeaderTitle) roleHeaderTitle.textContent = `Welcome back, ${u.name || 'User'}!`;
-    if (navDashText) navDashText.textContent = r === 'user' ? 'Student Dashboard' : 'Responder Dashboard';
-
-    // Hide all views first
-    if (studentView) studentView.style.display = "none";
-    if (medicView) medicView.style.display = "none";
-    if (officerView) officerView.style.display = "none";
-
-    // Show appropriate view
-    if (r === 'officer' || r === 'admin') {
-        if (officerView) officerView.style.display = "block";
-        loadOfficerData();
-    } else if (r === 'member') {
-        if (medicView) medicView.style.display = "block";
-        loadMedicData();
-    } else {
-        if (studentView) studentView.style.display = "block";
-        loadStudentData();
-    }
-}
-
-// Global state container
-const state = {
-    user: null,
-    token: localStorage.getItem('lifeline_token') || null
+// --- GLOBAL CONSTANTS & STATE ---
+const LS = {
+    token: "lifeline_auth_token",
+    user: "lifeline_user_data",
+    section: "lifeline_active_section",
+    alerts: "lifeline_alerts_muted"
 };
 
-// API helper
+let state = {
+    user: null,
+    meta: {
+        buildings: [],
+        rooms: [],
+        squads: [],
+        zones: []
+    },
+    incidents: [],
+    announcements: [],
+    users: [],
+    loginLogs: [],
+    incidentLogs: [],
+    selectedBuilding: null,
+    selectedRoom: null,
+    isMuted: localStorage.getItem(LS.alerts) === "true"
+};
+
+const POLL_MS = 4000;
+let lastAlertCount = 0;
+let activeAudioCtx = null;
+let sirenOscillator = null;
+
+// --- API HELPER ---
 async function api(endpoint, options = {}) {
     const headers = {
-        'Content-Type': 'application/json',
-        ...(state.token ? { 'Authorization': 'Bearer ' + state.token } : {}),
+        "Content-Type": "application/json",
+        ...(state.token ? { "Authorization": "Bearer " + state.token } : {}),
         ...(options.headers || {})
     };
-    
+
+    let body = options.body;
+    if (body && typeof body === "object" && !(body instanceof FormData)) {
+        body = JSON.stringify(body);
+    }
+
     const res = await fetch(endpoint, {
         ...options,
-        headers
+        headers,
+        body
     });
 
-    const data = await res.json().catch(() => ({}));
+    const text = await res.text();
+    let data;
+    try {
+        data = text ? JSON.parse(text) : {};
+    } catch {
+        data = { error: text || "Invalid JSON response from server." };
+    }
+
     if (!res.ok) {
-        throw new Error(data.error || 'An unexpected error occurred.');
+        throw new Error(data.error || `HTTP error! status: ${res.status}`);
     }
     return data;
 }
 
-// OTP Request Function
-async function requestOTP() {
-    const studentIdInput = document.getElementById('regStudentId');
-    const statusMsg = document.getElementById('otpStatusMsg');
-    const otpContainer = document.getElementById('otpCodeContainer');
-    const sendBtn = document.getElementById('sendOtpBtn');
+// --- AUTH UI & TAB SWITCHING ---
+function switchAuthTab(tab) {
+    const loginTabBtn = document.getElementById("loginTabBtn");
+    const registerTabBtn = document.getElementById("registerTabBtn");
+    const loginContainer = document.getElementById("loginFormContainer");
+    const registerContainer = document.getElementById("registerFormContainer");
 
+    if (!loginTabBtn || !registerTabBtn || !loginContainer || !registerContainer) return;
+
+    if (tab === "login") {
+        loginTabBtn.classList.add("active");
+        registerTabBtn.classList.remove("active");
+        loginContainer.style.display = "block";
+        registerContainer.style.display = "none";
+    } else {
+        registerTabBtn.classList.add("active");
+        loginTabBtn.classList.remove("active");
+        registerContainer.style.display = "block";
+        loginContainer.style.display = "none";
+    }
+}
+
+// --- TOAST NOTIFICATIONS ---
+function toast(message, type = "info", duration = 4000) {
+    let container = document.getElementById("toastContainer");
+    if (!container) {
+        container = document.createElement("div");
+        container.id = "toastContainer";
+        container.style.cssText = "position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px;";
+        document.body.appendChild(container);
+    }
+
+    const el = document.createElement("div");
+    let bg = "#2563eb";
+    if (type === "success") bg = "#059669";
+    if (type === "error") bg = "#dc2626";
+    if (type === "warning") bg = "#d97706";
+
+    el.style.cssText = `background: ${bg}; color: white; padding: 12px 18px; border-radius: 8px; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); transition: opacity 0.3s ease;`;
+    el.textContent = message;
+    container.appendChild(el);
+
+    setTimeout(() => {
+        el.style.opacity = "0";
+        setTimeout(() => el.remove(), 300);
+    }, duration);
+}
+
+// --- AUDIO & SIREN SYSTEM ---
+function unlockAudio() {
+    if (!activeAudioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) {
+            activeAudioCtx = new AudioContext();
+        }
+    }
+    if (activeAudioCtx && activeAudioCtx.state === "suspended") {
+        activeAudioCtx.resume();
+    }
+}
+
+function playSirenBeep() {
+    if (state.isMuted) return;
+    unlockAudio();
+    if (!activeAudioCtx) return;
+
+    try {
+        const osc = activeAudioCtx.createOscillator();
+        const gain = activeAudioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, activeAudioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, activeAudioCtx.currentTime + 0.3);
+
+        gain.gain.setValueAtTime(0.3, activeAudioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, activeAudioCtx.currentTime + 0.3);
+
+        osc.connect(gain);
+        gain.connect(activeAudioCtx.destination);
+        osc.start();
+        osc.stop(activeAudioCtx.currentTime + 0.3);
+    } catch (e) {
+        console.error("Audio error:", e);
+    }
+}
+
+// --- OTP & REGISTRATION LOGIC ---
+const ID_REGEX = /^\d{2}-\d{4}-\d{3}$/;
+let isOtpVerified = false;
+
+async function requestOTP() {
+    const studentIdInput = document.getElementById("regStudentId");
     if (!studentIdInput) return;
     const studentId = studentIdInput.value.trim();
 
-    if (!studentId) {
-        alert('Please enter your Student ID first.');
+    if (!studentId || !ID_REGEX.test(studentId)) {
+        toast("Please enter a valid Student ID format: 2X-XXXX-XXX (e.g. 23-1234-567).", "error");
         studentIdInput.focus();
         return;
     }
 
-    try {
-        if (sendBtn) sendBtn.disabled = true;
-        const res = await api('auth.php?action=send_otp', {
-            method: 'POST',
-            body: JSON.stringify({ student_id: studentId })
-        });
+    const btn = document.getElementById("sendOtpBtn");
+    if (btn) btn.disabled = true;
 
-        if (otpContainer) otpContainer.style.display = 'block';
+    try {
+        const res = await api("auth.php?action=send_otp", {
+            method: "POST",
+            body: { student_id: studentId }
+        });
+        const otpSection = document.getElementById("otpCodeContainer") || document.getElementById("otpSection");
+        if (otpSection) otpSection.style.display = "block";
+
+        const statusMsg = document.getElementById("otpStatusMsg");
         if (statusMsg) {
-            statusMsg.style.display = 'block';
-            statusMsg.style.color = '#2563eb';
-            statusMsg.textContent = res.message || 'OTP sent successfully! Check demo OTP if enabled.';
+            statusMsg.style.display = "block";
+            statusMsg.textContent = res.message || "OTP sent successfully!";
         }
-        if (res.demo_otp) {
-            console.log('DEMO OTP:', res.demo_otp);
-            alert('DEMO OTP for testing: ' + res.demo_otp);
-        }
+
+        toast(`OTP Sent! Demo code: ${res.demo_otp || 'Check console'}`, "success", 8000);
+        if (res.demo_otp) console.log("DEMO OTP:", res.demo_otp);
     } catch (err) {
-        alert(err.message);
+        toast(err.message || "Failed to send OTP.", "error");
     } finally {
-        if (sendBtn) sendBtn.disabled = false;
+        if (btn) btn.disabled = false;
     }
 }
 
-// OTP Verification Function
 async function verifyOTP() {
-    const studentIdInput = document.getElementById('regStudentId');
-    const otpInput = document.getElementById('regOtpCode');
-    const verifiedMsg = document.getElementById('otpVerifiedMsg');
-    const submitBtn = document.getElementById('regSubmitBtn');
-    const verifyBtn = document.getElementById('verifyOtpBtn');
-
+    const studentIdInput = document.getElementById("regStudentId");
+    const otpInput = document.getElementById("regOtpCode");
     if (!studentIdInput || !otpInput) return;
+
     const student_id = studentIdInput.value.trim();
     const otp_code = otpInput.value.trim();
 
-    if (!otp_code) {
-        alert('Please enter the 6-digit OTP code.');
+    if (!otp_code || otp_code.length !== 6) {
+        toast("Please enter the 6-digit OTP code.", "error");
         otpInput.focus();
         return;
     }
 
+    const btn = document.getElementById("verifyOtpBtn");
+    if (btn) btn.disabled = true;
+
     try {
-        if (verifyBtn) verifyBtn.disabled = true;
-        await api('auth.php?action=verify_otp', {
-            method: 'POST',
-            body: JSON.stringify({ student_id, otp_code })
+        const res = await api("auth.php?action=verify_otp", {
+            method: "POST",
+            body: { student_id, otp_code }
         });
 
-        if (verifiedMsg) verifiedMsg.style.display = 'block';
-        if (submitBtn) {
-            submitBtn.disabled = false;
-            submitBtn.style.opacity = '1';
-            submitBtn.style.cursor = 'pointer';
+        if (res.verified) {
+            isOtpVerified = true;
+            const verifiedMsg = document.getElementById("otpVerifiedMsg");
+            if (verifiedMsg) verifiedMsg.style.display = "block";
+
+            const submitBtn = document.getElementById("regSubmitBtn");
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.style.opacity = "1";
+                submitBtn.style.cursor = "pointer";
+            }
+            if (btn) btn.style.display = "none";
+            otpInput.disabled = true;
+            studentIdInput.disabled = true;
+            toast("OTP verified successfully! You may now complete your registration.", "success");
         }
-        if (verifyBtn) verifyBtn.style.display = 'none';
-        if (otpInput) otpInput.disabled = true;
-        if (studentIdInput) studentIdInput.disabled = true;
-        alert('OTP verified successfully! You can now complete your registration.');
     } catch (err) {
-        alert(err.message);
-        if (verifyBtn) verifyBtn.disabled = false;
+        toast(err.message || "Invalid or expired OTP code.", "error");
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 
-// Dummy loaders for role views if needed
-function loadStudentData() {}
-function loadMedicData() {}
-function loadOfficerData() {}
+// --- INITIALIZATION ---
+async function startLoginPage() {
+    try {
+        await api("auth.php?action=me");
+        window.location.replace("dashboard.html");
+    } catch (e) { /* stay on login */ }
+}
+
+function initApp() {
+    if (document.getElementById("dashboard")) {
+        // Dashboard init logic if present
+    } else {
+        startLoginPage();
+    }
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initApp);
+} else {
+    initApp();
+}
