@@ -100,6 +100,74 @@ document.addEventListener("click", function (event) {
     if (container && !container.contains(event.target)) closeProfileDropdown();
 });
 
+// --- NAVIGATION & DASHBOARD CONTROLS ---
+function toggleSidebar() {
+    const sidebar = document.getElementById("sidebar");
+    if (sidebar) sidebar.classList.toggle("open");
+}
+
+function toggleSidebarCollapse() {
+    const appLayout = document.getElementById("appLayout");
+    if (appLayout) appLayout.classList.toggle("collapsed");
+}
+
+function showSection(sectionId, isInitialLoad = false) {
+    localStorage.setItem(LS.section, sectionId);
+    document.querySelectorAll(".nav-item").forEach(el => el.classList.remove("active"));
+    const activeNav = document.getElementById("nav-" + sectionId);
+    if (activeNav) activeNav.classList.add("active");
+
+    document.querySelectorAll(".dashboard-section").forEach(sec => sec.style.display = "none");
+    const targetSec = document.getElementById("section-" + sectionId);
+    if (targetSec) targetSec.style.display = "block";
+
+    if (!isInitialLoad) closeProfileDropdown();
+}
+
+// --- MODALS & USER ACTIONS ---
+function closeModal() {
+    document.querySelectorAll(".modal, .custom-modal").forEach(m => m.style.display = "none");
+}
+
+function closeCodeModal() {
+    const m = document.getElementById("codeModal");
+    if (m) m.style.display = "none";
+}
+
+function openProfileEdit() {
+    closeProfileDropdown();
+    const m = document.getElementById("profileEditModal");
+    if (m) m.style.display = "flex";
+}
+
+function closeProfileEdit() {
+    const m = document.getElementById("profileEditModal");
+    if (m) m.style.display = "none";
+}
+
+async function toggleSelfDuty() {
+    if (!state.user) return;
+    try {
+        await api("roster.php?action=toggle_duty", { method: "POST", body: { student_id: state.user.studentId } });
+        toast("Duty status updated.", "success");
+    } catch (err) {
+        toast(err.message, "error");
+    }
+}
+
+function enableAlerts() {
+    state.isMuted = false;
+    localStorage.setItem(LS.alerts, "false");
+    toast("Audio alerts enabled.", "success");
+}
+
+async function logout() {
+    try { await api("auth.php?action=logout", { method: "POST" }); } catch (e) { /* ignore */ }
+    localStorage.removeItem(LS.section);
+    localStorage.removeItem(LS.token);
+    window.location.replace("index.html");
+}
+
 // --- TOAST NOTIFICATIONS ---
 function toast(message, type = "info", duration = 4000) {
     let container = document.getElementById("toastContainer");
@@ -213,16 +281,12 @@ async function verifyOTP() {
     }
 }
 
-// --- DASHBOARD & NAVIGATION ---
-function showSection(sectionId, skipPush = false) {
-    // Basic section toggler if dashboard elements exist
-    console.log("Showing section:", sectionId);
-}
-
+// --- INITIALIZATION ---
 async function startDashboard() {
     try {
         const me = await api("auth.php?action=me");
         state.user = me.user;
+        showSection(localStorage.getItem(LS.section) || "dashboard", true);
     } catch (e) {
         window.location.replace("index.html");
     }
