@@ -27,7 +27,6 @@ let state = {
 const POLL_MS = 4000;
 let lastAlertCount = 0;
 let activeAudioCtx = null;
-let sirenOscillator = null;
 
 // --- API HELPER ---
 async function api(endpoint, options = {}) {
@@ -84,6 +83,23 @@ function switchAuthTab(tab) {
     }
 }
 
+// --- PROFILE DROPDOWN & UI HELPERS ---
+function toggleProfileDropdown(event) {
+    if (event) event.stopPropagation();
+    const menu = document.getElementById("profileDropdownMenu");
+    if (menu) menu.classList.toggle("show");
+}
+
+function closeProfileDropdown() {
+    const menu = document.getElementById("profileDropdownMenu");
+    if (menu) menu.classList.remove("show");
+}
+
+document.addEventListener("click", function (event) {
+    const container = document.getElementById("userProfileMenuContainer");
+    if (container && !container.contains(event.target)) closeProfileDropdown();
+});
+
 // --- TOAST NOTIFICATIONS ---
 function toast(message, type = "info", duration = 4000) {
     let container = document.getElementById("toastContainer");
@@ -108,43 +124,6 @@ function toast(message, type = "info", duration = 4000) {
         el.style.opacity = "0";
         setTimeout(() => el.remove(), 300);
     }, duration);
-}
-
-// --- AUDIO & SIREN SYSTEM ---
-function unlockAudio() {
-    if (!activeAudioCtx) {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (AudioContext) {
-            activeAudioCtx = new AudioContext();
-        }
-    }
-    if (activeAudioCtx && activeAudioCtx.state === "suspended") {
-        activeAudioCtx.resume();
-    }
-}
-
-function playSirenBeep() {
-    if (state.isMuted) return;
-    unlockAudio();
-    if (!activeAudioCtx) return;
-
-    try {
-        const osc = activeAudioCtx.createOscillator();
-        const gain = activeAudioCtx.createGain();
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(880, activeAudioCtx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, activeAudioCtx.currentTime + 0.3);
-
-        gain.gain.setValueAtTime(0.3, activeAudioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, activeAudioCtx.currentTime + 0.3);
-
-        osc.connect(gain);
-        gain.connect(activeAudioCtx.destination);
-        osc.start();
-        osc.stop(activeAudioCtx.currentTime + 0.3);
-    } catch (e) {
-        console.error("Audio error:", e);
-    }
 }
 
 // --- OTP & REGISTRATION LOGIC ---
@@ -234,7 +213,21 @@ async function verifyOTP() {
     }
 }
 
-// --- INITIALIZATION ---
+// --- DASHBOARD & NAVIGATION ---
+function showSection(sectionId, skipPush = false) {
+    // Basic section toggler if dashboard elements exist
+    console.log("Showing section:", sectionId);
+}
+
+async function startDashboard() {
+    try {
+        const me = await api("auth.php?action=me");
+        state.user = me.user;
+    } catch (e) {
+        window.location.replace("index.html");
+    }
+}
+
 async function startLoginPage() {
     try {
         await api("auth.php?action=me");
@@ -244,7 +237,7 @@ async function startLoginPage() {
 
 function initApp() {
     if (document.getElementById("dashboard")) {
-        // Dashboard init logic if present
+        startDashboard();
     } else {
         startLoginPage();
     }
