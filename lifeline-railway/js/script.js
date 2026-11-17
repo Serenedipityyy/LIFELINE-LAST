@@ -3,7 +3,8 @@ const LS = {
     token: "lifeline_auth_token",
     user: "lifeline_user_data",
     section: "lifeline_active_section",
-    alerts: "lifeline_alerts_muted"
+    alerts: "lifeline_alerts_muted",
+    sidebar: "lifeline_sidebar_collapsed"
 };
 
 let state = {
@@ -12,7 +13,8 @@ let state = {
         buildings: [],
         rooms: [],
         squads: [],
-        zones: []
+        zones: [],
+        types: []
     },
     incidents: [],
     announcements: [],
@@ -56,7 +58,9 @@ async function api(endpoint, options = {}) {
     }
 
     if (!res.ok) {
-        throw new Error(data.error || `HTTP error! status: ${res.status}`);
+        const errorObj = new Error(data.error || `HTTP error! status: ${res.status}`);
+        errorObj.status = res.status;
+        throw errorObj;
     }
     return data;
 }
@@ -82,6 +86,91 @@ function switchAuthTab(tab) {
         loginContainer.style.display = "none";
     }
 }
+
+// --- PROFILE & RENDER HELPERS ---
+function renderProfile() {
+    const u = state.user;
+    if (!u) return;
+    
+    const userNameEl = document.getElementById("coderUserName") || document.getElementById("headerUserName");
+    const userRoleEl = document.getElementById("aderUserRole") || document.getElementById("headerUserRole");
+    const headerAvatar = document.getElementById("headerAvatar");
+
+    if (userNameEl) userNameEl.textContent = u.name || u.studentId || "User";
+    if (userRoleEl) userRoleEl.textContent = u.role ? u.role.toUpperCase() : "STUDENT";
+    if (headerAvatar && u.name) {
+        headerAvatar.textContent = u.name.charAt(0).toUpperCase();
+    }
+}
+
+function renderRoleDashboard() {
+    const u = state.user;
+    if (!u) return;
+
+    const r = u.role; // 'user', 'member', 'officer', 'admin'
+    const studentView = document.getElementById("studentDashboardView");
+    const medicView = document.getElementById("medicDashboardView");
+    const officerView = document.getElementById("officerDashboardView");
+
+    const badgeHeader = document.getElementById("roleBadgeHeader");
+    const roleHeaderBadge = document.getElementById("roleHeaderBadge");
+    const roleHeaderTitle = document.getElementById("roleHeaderTitle");
+    const navDashText = document.getElementById("navDashText");
+
+    if (badgeHeader) {
+        if (r === "officer" || r === "admin") {
+            badgeHeader.textContent = "OFFICER";
+            badgeHeader.style.background = "#2563eb";
+        } else if (r === "member") {
+            badgeHeader.textContent = "MEDIC";
+            badgeHeader.style.background = "#059669";
+        } else {
+            badgeHeader.textContent = "STUDENT";
+            badgeHeader.style.background = "#4f46e5";
+        }
+    }
+
+    if (roleHeaderBadge) roleHeaderBadge.textContent = r.toUpperCase();
+    if (roleHeaderTitle) roleHeaderTitle.textContent = `Welcome back, ${u.name || 'User'}!`;
+    if (navDashText) navDashText.textContent = r === 'user' ? 'Student Dashboard' : 'Responder Dashboard';
+
+    if (studentView) studentView.style.display = "none";
+    if (medicView) medicView.style.display = "none";
+    if (officerView) officerView.style.display = "none";
+
+    if (r === 'officer' || r === 'admin') {
+        if (officerView) officerView.style.display = "block";
+    } else if (r === 'member') {
+        if (medicView) medicView.style.display = "block";
+    } else {
+        if (studentView) studentView.style.display = "block";
+    }
+}
+
+function fillSelect(selectEl, items, defaultText = "Select option") {
+    if (!selectEl) return;
+    selectEl.innerHTML = `<option value="">${defaultText}</option>`;
+    if (!items) return;
+    items.forEach(item => {
+        const opt = document.createElement("option");
+        opt.value = item.id || item.name || item;
+        opt.textContent = item.name || item;
+        selectEl.appendChild(opt);
+    });
+}
+
+function updateRoomDropdown() {
+    const buildingSelect = document.getElementById("building");
+    const roomSelect = document.getElementById("room");
+    if (!buildingSelect || !roomSelect) return;
+
+    const bId = buildingSelect.value;
+    const rooms = state.meta.rooms.filter(r => String(r.buildingId) === String(bId));
+    fillSelect(roomSelect, rooms, "Select Room / Area");
+}
+
+function renderSquadOverview() {}
+async function pollTick() {}
 
 // --- PROFILE DROPDOWN & UI HELPERS ---
 function toggleProfileDropdown(event) {
@@ -283,13 +372,30 @@ async function verifyOTP() {
 
 // --- INITIALIZATION ---
 async function startDashboard() {
+    let me;
     try {
-        const me = await api("auth.php?action=me");
-        state.user = me.user;
-        showSection(localStorage.getItem(LS.section) || "dashboard", true);
-    } catch (e) {
+        me = await api("auth.php?action=me");
+    } catch (err) {
+        if (err.status !== 401) toast(err.message, "error", 8000);
         window.location.replace("index.html");
+        return;
     }
+
+    state.user = me.user;
+    renderProfile();
+    renderRoleDashboard();
+
+    try {
+        state.meta = await api("meta.php");
+    } catch (err) {
+        toast("Could not load campus data: " + err.message, "error", 8000);
+    }
+
+    fillSelect(document.getElementById("building"), state.meta.buildings, "Select Building");
+    fillSelect(document.getElementById("incidentType"), state.meta.types, "Not sure / Other");
+    updateRoomDropdown();
+
+    showSection(localStorage.getItem(LS.section) || "dashboard", true);
 }
 
 async function startLoginPage() {
